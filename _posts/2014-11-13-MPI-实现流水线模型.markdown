@@ -1,0 +1,152 @@
+---
+layout: post
+title: "MPI 实现流水线模型"
+date: 2014-11-13 23:38:34 +0800
+comments: true
+toc: false
+categories: parallel
+tags:
+- MPI
+---
+
+
+
+cpu在单处理器执行指令时，采用的是流水线模型。在一个流水线多次执行时可以加速。
+超标量介于标量和向量之间，因为处理器处理一条指令：去指令，解析/取数，计算/写数五步。
+而随着其他算数部件，例如ALU和PLU的增加，标量的话会令处理器的处理性能降低，而有些机器和操作却并不支持向量操作。而多处理器同样可以加速指令的执行速度，在每个指令处理的过程中依然是超标量的，也就是多条流水线。
+<!--more-->
+
+顺便整理了一些资料：
+
+MIMD既可以共享内存也可以每个处理器独享内存，共享内存的好处是操作系统维护内存患处是：不宜扩充、不灵活。
+
+目前大致知道了，什么是simp,mimp,一些体系结构的知识。
+
+下面给个wiki上的一个链接：
+[http://en.wikipedia.org/wiki/Classic_RISC_pipeline](http://en.wikipedia.org/wiki/Classic_RISC_pipeline)
+
+
+``` c pipeline.c
+ // the pipeline funtion like the RISC pipeline
+//wyl 
+// code maybe a[i] = a[i-1] 
+
+#include "mpi.h"
+#include <stdio.h>
+#include <math.h>
+
+#define Len 4000
+
+
+int i, j, M, N;  // MΪɎϱט¸´µĴϊ
+int root, perce; // perce = Len / numprocs
+int data[Len];
+int myrank, numproncs;
+MPI_Status status;
+
+int  get_key()
+{
+	static int key = 0;
+	return ++key;
+}
+
+void init(int argc, char* argv[])
+{
+	MPI_Init(&argc, &argv);	
+	MPI_Comm_size(MPI_COMM_WORLD, &numproncs);
+
+	M = 10000;
+	root = 0;
+	perce = floor((Len / numproncs) + 0.5);
+
+	for(i = 0; i < Len; ++i)
+	{
+		data[i] = 0;
+	}
+}
+
+void Finalize()
+{
+	MPI_Finalize();
+}
+
+void Single_computer()
+{
+	for(i = 0; i < M; ++i)
+		for(j=1; j < Len; j++)
+	data[j] = data[j-1] + get_key();
+}
+
+void Dump_computer()
+{
+	MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+
+	if(myrank == root)
+	{
+		int start = perce * myrank;
+		
+		for(i = 0; i < M; ++i)
+		{
+			for(j = start; j < start + perce; ++j)
+			{
+				data[j] = data[j-1] + get_key();
+			}
+			MPI_Send(&data[j-1], 1, MPI_INT, myrank+1, i, MPI_COMM_WORLD);   //лϢ±뇩i±°´Ѳµ½´
+		}
+	}
+	else if( myrank != root && myrank <(numproncs-1))
+	{
+		int start = perce * myrank;
+
+		for(i = 0; i < M; ++i)
+		{
+			MPI_Recv(&data[myrank*perce-1], 1, MPI_INT, myrank-1, i, MPI_COMM_WORLD, &status);		
+			for(j = start; j < start + perce; ++j)
+			{
+				data[j] = data[j-1] + get_key();
+			}
+			MPI_Send(&data[j-1], 1, MPI_INT, myrank+1, i, MPI_COMM_WORLD);
+		}
+	}
+	else if(myrank == numproncs - 1)
+	{	
+		int start = perce * myrank;
+		
+		for(i = 0; i < M; ++i)
+		{
+			MPI_Recv(&data[start-1], 1, MPI_INT, myrank-1, i, MPI_COMM_WORLD, &status);
+			for(j = start; j < start + perce && j < Len; ++j)
+			{
+				data[j] = data[j-1] + get_key();
+			}
+		}
+	}
+}
+
+int main(int argc, char *argv[])
+{
+	double start, end;
+
+	init(argc, argv);
+	
+	start = MPI_Wtime();
+	if(numproncs == 1)
+	{
+		Single_computer();
+	}
+	else
+	{
+		Dump_computer();
+	}
+
+	end = MPI_Wtime();
+
+	if(numproncs == 1)
+		printf("the Single thread running %lf s\n", end - start);
+	else if(myrank == numproncs - 1)
+		printf("the total %d threads runing %lf s\n", numproncs, end -start);
+
+	Finalize();
+	return 0;
+}
+```
